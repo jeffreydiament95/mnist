@@ -5,7 +5,6 @@ import torchvision
 import torchvision.transforms as transforms
 import torch.nn as nn
 import torch.nn.functional as F
-
 from torch.utils.data.dataloader import DataLoader
 
 
@@ -18,35 +17,45 @@ digit_classes = 10
 batch_size = 64
 first_hidden_layer = 512
 second_hidden_layer = 512
-learning_rate = 5e-2
-epochs = 5
+learning_rate = 0.1
+epochs = 1
 
-# load the train dataset for mean calculation
-train_dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transforms.ToTensor())
+lre = torch.linspace(-2, -0.2, 1000)
+lrs = 10 ** lre
+losses = []
 
-# compute mean and std of the train dataset
-mean = train_dataset.data.float().mean() / pixel_range
-std = train_dataset.data.float().std() / pixel_range
+def load_data():
+    # load the train dataset for mean calculation
+    train_dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transforms.ToTensor())
 
-# define transformation to be applied to the images
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(mean=(mean,), std=(std,))
-])
+    # compute mean and std of the train dataset
+    mean = train_dataset.data.float().mean() / pixel_range
+    std = train_dataset.data.float().std() / pixel_range
 
-# load the train and test datasets with normalization. these normalizations are applied to the images when they are loaded
-train_dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
-test_dataset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+    # define transformation to be applied to the images
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=(mean,), std=(std,))
+    ])
 
-# build the train and test dataloaders
-train_data_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-test_data_loader = DataLoader(dataset=test_dataset, batch_size=1, shuffle=True)
+    # load the train and test datasets with normalization. these normalizations are applied to the images when they are loaded
+    train_dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+    test_dataset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
 
-fig, axes = plt.subplots(5, 5, figsize=(10, 10))
-fig.tight_layout()
+    # build the train and test dataloaders
+    train_data_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+    test_data_loader = DataLoader(dataset=test_dataset, batch_size=1, shuffle=True)
+    
+    return train_data_loader, test_data_loader
 
 @torch.no_grad()
 def visualize_accuracy(model, data_loader, axes, num_images=25):
+    assert num_images**0.5 == int(num_images**0.5), "num_images must be a perfect square"
+    
+    if fig is None and axes is None:
+        fig, axes = plt.subplots(num_images**0.5, num_images**0.5, figsize=(10, 10))
+        fig.tight_layout()
+    
     for ax in axes.flat:
         ax.clear()
 
@@ -87,7 +96,7 @@ def visualize_accuracy(model, data_loader, axes, num_images=25):
     plt.pause(0.1)
 
 @torch.no_grad()
-def evaluate(model, data_loader, num_samples=1000):
+def evaluate(model, data_loader, num_batches=1000):
     correct_sum = 0
     loss_sum = 0
     total = 0
@@ -99,13 +108,12 @@ def evaluate(model, data_loader, num_samples=1000):
         _, predicted = torch.max(logits, 1)
         correct_sum += (predicted == targets).sum().item()
         total += targets.size(0)
-        if i == num_samples-1:
+        if i == num_batches-1:
             break
     
     mean_loss = loss_sum / total
     accuracy = correct_sum / total
     return accuracy, mean_loss
-
 
 # define the model
 class MLP(nn.Module):
@@ -131,13 +139,20 @@ class MLP(nn.Module):
         return logits, loss
 
 # initialize the model and the optimizer
+train_data_loader, test_data_loader = load_data()
 model = MLP()
-optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+# optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
 # training loop
 for epoch in range(epochs):
     running_loss = []
-    for i, data in enumerate(train_data_loader):
+    # for i, data in enumerate(train_data_loader):
+    for i in range(len(lrs)):
+        data = next(iter(train_data_loader))
+        
+        # set learning rate
+        optimizer = torch.optim.SGD(model.parameters(), lr=lrs[i])
+        
         # get batch data 
         inputs, targets = data
         
@@ -155,11 +170,18 @@ for epoch in range(epochs):
         
         # print loss and accuracy
         running_loss.append(loss.item())
-        if i % 100 == 0:
-            accuracy, test_loss = evaluate(model, test_data_loader)
-            # visualize_accuracy(model, test_data_loader, axes)
-            print(f'epoch {epoch+1}/{epochs}, iteration {i+1}: train loss {sum(running_loss) / len(running_loss):0.4f}, test loss {test_loss :0.4f} test accuracy {accuracy:0.2%}')
-            # input('Press Enter to continue...')
-            
-accuracy, test_loss = evaluate(model, test_data_loader, num_samples=len(test_dataset))
-print(f'Performance over all test data: loss {test_loss:0.4f}, accuracy {accuracy:0.2%}')
+        if i % 1 == 0:
+            # accuracy, test_loss = evaluate(model, test_data_loader, num_batches=1010)
+            # # visualize_accuracy(model, test_data_loader, axes)
+            # print(f'epoch {epoch+1}/{epochs}, iteration {i+1}: train loss {sum(running_loss) / len(running_loss):0.4f}, test loss {test_loss :0.4f} test accuracy {accuracy:0.2%}')
+            # # input('Press Enter to continue...')
+            losses.append(loss.item())
+            print(f'{i}/{len(lrs)} : {loss}')
+
+
+plt.plot(lre, losses)
+plt.xlabel('Learning Rate Exponent')
+plt.ylabel('Loss')
+plt.show()
+# accuracy, test_loss = evaluate(model, test_data_loader, num_samples=len(test_dataset))
+# print(f'Performance over all test data: loss {test_loss:0.4f}, accuracy {accuracy:0.2%}')
