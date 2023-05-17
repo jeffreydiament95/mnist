@@ -1,3 +1,4 @@
+import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -6,31 +7,64 @@ import torchvision.transforms as transforms
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data.dataloader import DataLoader
+from dataclasses import dataclass
 
 
+# -----------------------------------------------------------------------------
 # constants
-pixel_range = 255
-image_size = 28*28
-digit_classes = 10
+PIXEL_RANGE = 255
+IMAGE_SIZE = 28*28
+DIGIT_CLASSES = 10
 
-# hyperparameters
-batch_size = 64
-first_hidden_layer = 512
-second_hidden_layer = 512
-learning_rate = 0.1
-epochs = 1
+# -----------------------------------------------------------------------------
+# gloabl variables to make plotting easier
+fig, axes = None, None
 
-lre = torch.linspace(-2, -0.2, 1000)
-lrs = 10 ** lre
-losses = []
+# -----------------------------------------------------------------------------
 
+@dataclass
+class ModelConfig:
+    first_hidden_layer: int = None
+    second_hidden_layer: int = None
+
+# -----------------------------------------------------------------------------
+# MLP model
+
+class MLP(nn.Module):
+    """
+    takes in an image of size 28x28 and outputs a vector of size 10 predicting the digit in the image along with the loss (if targets are provided)
+    """
+    def __init__(self):
+        super().__init__()
+        
+        self.fc1 = nn.Linear(IMAGE_SIZE, config.first_hidden_layer)
+        self.fc2 = nn.Linear(config.first_hidden_layer, config.second_hidden_layer)
+        self.fc3 = nn.Linear(config.second_hidden_layer, DIGIT_CLASSES)
+
+        
+    def forward(self, x, targets=None):
+        
+        x = x.view(-1, IMAGE_SIZE) # batch_size x image_size
+        h1 = F.relu(self.fc1(x)) # batch_size x first_hidden_layer
+        h2 = F.relu(self.fc2(h1)) # batch_size x second_hidden_layer
+        logits = self.fc3(h2) # batch_size x digit_classes
+        
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits, targets)
+        
+        return logits, loss
+
+
+# -----------------------------------------------------------------------------
+# helper function for loading and normalizing the MNIST dataset
 def load_data():
     # load the train dataset for mean calculation
     train_dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transforms.ToTensor())
 
     # compute mean and std of the train dataset
-    mean = train_dataset.data.float().mean() / pixel_range
-    std = train_dataset.data.float().std() / pixel_range
+    mean = train_dataset.data.float().mean() / PIXEL_RANGE
+    std = train_dataset.data.float().std() / PIXEL_RANGE
 
     # define transformation to be applied to the images
     transform = transforms.Compose([
@@ -42,18 +76,20 @@ def load_data():
     train_dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
     test_dataset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
 
-    # build the train and test dataloaders
-    train_data_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-    test_data_loader = DataLoader(dataset=test_dataset, batch_size=1, shuffle=True)
-    
-    return train_data_loader, test_data_loader
 
+    return train_dataset, test_dataset
+
+# -----------------------------------------------------------------------------
+# helper functions for evaluating and visualizing the model performance
 @torch.no_grad()
-def visualize_accuracy(model, data_loader, axes, num_images=25):
-    assert num_images**0.5 == int(num_images**0.5), "num_images must be a perfect square"
+def visualize_accuracy(model, dataset, num_images=25):
+    global fig, axes
+    
+    n = int(num_images**0.5)
+    assert num_images**0.5 == n, "num_images must be a perfect square"
     
     if fig is None and axes is None:
-        fig, axes = plt.subplots(num_images**0.5, num_images**0.5, figsize=(10, 10))
+        fig, axes = plt.subplots(n, n, figsize=(10, 10))
         fig.tight_layout()
     
     for ax in axes.flat:
@@ -62,6 +98,8 @@ def visualize_accuracy(model, data_loader, axes, num_images=25):
     images = []
     labels = []
     predictions = []
+
+    data_loader = DataLoader(dataset, shuffle=True, batch_size=1)
 
     for i, data in enumerate(data_loader):
         image, label = data
@@ -96,92 +134,90 @@ def visualize_accuracy(model, data_loader, axes, num_images=25):
     plt.pause(0.1)
 
 @torch.no_grad()
-def evaluate(model, data_loader, num_batches=1000):
-    correct_sum = 0
-    loss_sum = 0
-    total = 0
+def evaluate(model, dataset, batch_size=64, max_batches=None):
+    data_loader = DataLoader(dataset, shuffle=True, batch_size=batch_size)
+    losses = []
+    accuracy = []
 
     for i, data in enumerate(data_loader):
         inputs, targets = data
         logits, loss = model(inputs, targets)
-        loss_sum += loss.item()
+        losses.append(loss.item())
         _, predicted = torch.max(logits, 1)
-        correct_sum += (predicted == targets).sum().item()
-        total += targets.size(0)
-        if i == num_batches-1:
+        accuracy.append((predicted == targets).sum().item() / targets.size(0)) 
+        if max_batches is not None and i >= max_batches-1:
             break
     
-    mean_loss = loss_sum / total
-    accuracy = correct_sum / total
-    return accuracy, mean_loss
+    mean_loss = torch.tensor(losses).mean().item()
+    mean_accuracy = torch.tensor(accuracy).mean().item()
+    return mean_accuracy, mean_loss
 
-# define the model
-class MLP(nn.Module):
-    def __init__(self):
-        super().__init__()
-        
-        self.fc1 = nn.Linear(image_size, first_hidden_layer)
-        self.fc2 = nn.Linear(first_hidden_layer, second_hidden_layer)
-        self.fc3 = nn.Linear(second_hidden_layer, digit_classes)
+# -----------------------------------------------------------------------------
+if __name__ == '__main__':
 
-        
-    def forward(self, x, targets=None):
-        
-        x = x.view(-1, image_size) # batch_size x image_size
-        h1 = F.relu(self.fc1(x)) # batch_size x first_hidden_layer
-        h2 = F.relu(self.fc2(h1)) # batch_size x second_hidden_layer
-        logits = self.fc3(h2) # batch_size x digit_classes
-        
-        loss = None
-        if targets is not None:
-            loss = F.cross_entropy(logits, targets)
-        
-        return logits, loss
-
-# initialize the model and the optimizer
-train_data_loader, test_data_loader = load_data()
-model = MLP()
-# optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
-
-# training loop
-for epoch in range(epochs):
-    running_loss = []
-    # for i, data in enumerate(train_data_loader):
-    for i in range(len(lrs)):
-        data = next(iter(train_data_loader))
-        
-        # set learning rate
-        optimizer = torch.optim.SGD(model.parameters(), lr=lrs[i])
-        
-        # get batch data 
-        inputs, targets = data
-        
-        # forward pass
-        logits, loss = model(inputs, targets)
-        
-        #set gradients to zero
-        optimizer.zero_grad()
-        
-        # backward pass
-        loss.backward()
-        
-        # gradient descent
-        optimizer.step()
-        
-        # print loss and accuracy
-        running_loss.append(loss.item())
-        if i % 1 == 0:
-            # accuracy, test_loss = evaluate(model, test_data_loader, num_batches=1010)
-            # # visualize_accuracy(model, test_data_loader, axes)
-            # print(f'epoch {epoch+1}/{epochs}, iteration {i+1}: train loss {sum(running_loss) / len(running_loss):0.4f}, test loss {test_loss :0.4f} test accuracy {accuracy:0.2%}')
-            # # input('Press Enter to continue...')
-            losses.append(loss.item())
-            print(f'{i}/{len(lrs)} : {loss}')
+    # parse command line args
+    parser = argparse.ArgumentParser(description="MNIST")
+    # system
+    parser.add_argument('--seed', type=int, default=42, help="seed")
+    # model
+    parser.add_argument('--n-layer1', type=int, default=512, help="number of neurons in MLP layer 1")
+    parser.add_argument('--n-layer2', type=int, default=512, help="number of neurons in MLP layer 2")
+    # optimization
+    parser.add_argument('--batch-size', '-b', type=int, default=64, help="batch size during optimization")
+    parser.add_argument('--learning-rate', '-l', type=float, default=1e-1, help="learning rate")
+    parser.add_argument('--epochs', '-e', type=float, default=5, help="epochs")
+    # other
+    parser.add_argument('--print', '-p', action='store_true', default=False, help="enable print loss and accuracy during optimization")
+    parser.add_argument('--visualize', '-v', action='store_true', default=False, help="enable visualize model performance during optimization")
 
 
-plt.plot(lre, losses)
-plt.xlabel('Learning Rate Exponent')
-plt.ylabel('Loss')
-plt.show()
-# accuracy, test_loss = evaluate(model, test_data_loader, num_samples=len(test_dataset))
-# print(f'Performance over all test data: loss {test_loss:0.4f}, accuracy {accuracy:0.2%}')
+    args = parser.parse_args()
+    print(vars(args))
+    
+    # system inits
+    torch.manual_seed(args.seed)
+    
+    # init model
+    config = ModelConfig(first_hidden_layer=args.n_layer1, second_hidden_layer=args.n_layer2)
+
+    # load the data and create a train data_loader
+    train_dataset, test_dataset = load_data()
+    train_data_loader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size)
+
+    # initialize the model and the optimizer
+    model = MLP()
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate)
+    print(f"model #params: {sum(p.numel() for p in model.parameters())}")
+
+    # training loop
+    for epoch in range(args.epochs):
+        running_loss = []
+        for i, data in enumerate(train_data_loader):            
+            # get batch data 
+            inputs, targets = data
+            
+            # forward pass
+            logits, loss = model(inputs, targets)
+            
+            # set gradients to zero
+            optimizer.zero_grad()
+            
+            # backward pass
+            loss.backward()
+            
+            # gradient descent
+            optimizer.step()
+            
+            # print loss and accuracy
+            running_loss.append(loss.item())
+            if i % 100 == 0:
+                accuracy, test_loss = evaluate(model, test_dataset, max_batches=1)
+                if args.visualize:
+                    visualize_accuracy(model, test_dataset)
+                if args.print:
+                    print(f'epoch {epoch+1}/{args.epochs}, iteration {i+1}: train loss {sum(running_loss) / len(running_loss):0.4f}, test loss {test_loss :0.4f} test accuracy {accuracy:0.2%}')
+                # input('Press Enter to continue...')
+
+
+    accuracy, test_loss = evaluate(model, test_dataset)
+    print(f'Performance over all test data: loss {test_loss:0.4f}, accuracy {accuracy:0.2%}')
